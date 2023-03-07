@@ -36,7 +36,7 @@ fn main() {
 		..FuseFileSystem::default()
 	};
 
-	let mount_session = fuser::spawn_mount2(fs, mount_point, &vec![
+	let mount_session = fuser::spawn_mount2(fs, mount_point, &[
 		MountOption::RO,
 		MountOption::FSName("rhmmfs".to_string()),
 	])
@@ -150,14 +150,6 @@ impl fuser::Filesystem for FuseFileSystem {
 			uncompressed_data.len()
 		);
 
-		// let mut output_file = File::options()
-		// 	.create(true)
-		// 	.write(true)
-		// 	.open("./output.bin")
-		// 	.unwrap();
-		//
-		// output_file.write(&uncompressed_data).unwrap();
-
 		if !uncompressed_data.starts_with(b"SARC") {
 			eprintln!("[Error] uncompressed data isn't a SARC archive");
 			return Err(libc::ENOSYS);
@@ -170,8 +162,6 @@ impl fuser::Filesystem for FuseFileSystem {
 
 		let sarc_archive = sarc::Sarc::new(&uncompressed_data).unwrap();
 
-		// sarc_archive.get_data();
-
 		let archive_files: Vec<_> = sarc_archive.files().collect();
 		info!("archive contains {} files", archive_files.len());
 
@@ -182,29 +172,46 @@ impl fuser::Filesystem for FuseFileSystem {
 		self.add_new_dir_attr(FUSE_ROOT_ID, SystemTime::now(), uid, gid);
 		self.next_inode = FUSE_ROOT_ID + 1;
 
-		let mut unresolved_paths: Vec<(INode, Vec<(&str, &str, usize)>)> = vec![(
+		struct FileInfo<'a> {
+			unresolved_path: &'a str,
+			full_path: &'a str,
+			size: usize,
+		}
+
+		let mut unresolved_paths: Vec<(INode, Vec<FileInfo>)> = vec![(
 			FUSE_ROOT_ID,
 			archive_files
 				.iter()
-				.filter_map(|f| f.name.map(|n| (n, n, f.data.len())))
+				.filter_map(|f| {
+					f.name.map(|n| FileInfo {
+						unresolved_path: n,
+						full_path: n,
+						size: f.data.len(),
+					})
+				})
 				.collect(),
 		)];
 
 		while let Some((dir_inode, data)) = unresolved_paths.pop() {
-			let mut new_dirs = HashMap::<&str, Vec<(&str, &str, usize)>>::new();
+			let mut new_dirs = HashMap::<&str, Vec<FileInfo>>::new();
 
-			for (path, full_path, size) in data {
-				match path.split_once('/') {
+			for FileInfo {
+				unresolved_path,
+				full_path,
+				size,
+			} in data
+			{
+				match unresolved_path.split_once('/') {
 					Some((dir_name, unresolved_path)) => {
 						if !new_dirs.contains_key(dir_name) {
-							new_dirs.insert(dir_name.into(), Vec::new());
+							new_dirs.insert(dir_name, Vec::new());
 						}
 
-						new_dirs.get_mut(dir_name).unwrap().push((
-							unresolved_path.into(),
+						new_dirs.get_mut(dir_name).unwrap().push(FileInfo {
+							unresolved_path,
 							full_path,
 							size,
-						));
+						});
 					},
 
 					None => {
@@ -218,7 +225,7 @@ impl fuser::Filesystem for FuseFileSystem {
 						self.dir_children
 							.get_mut(&dir_inode)
 							.unwrap()
-							.insert(path.to_string(), file_inode);
+							.insert(unresolved_path.to_string(), file_inode);
 					},
 				}
 			}
@@ -266,7 +273,7 @@ impl fuser::Filesystem for FuseFileSystem {
 			Some(inode) => inode,
 		};
 
-		match self.attr_map.get(&file_inode) {
+		match self.attr_map.get(file_inode) {
 			None => reply.error(libc::ENOENT),
 			Some(attr) => reply.entry(&TTL, attr, 0),
 		};
@@ -286,8 +293,8 @@ impl fuser::Filesystem for FuseFileSystem {
 		_fh: u64,
 		offset: i64,
 		size: u32,
-		flags: i32,
-		lock_owner: Option<u64>,
+		_flags: i32,
+		_lock_owner: Option<u64>,
 		reply: fuser::ReplyData,
 	) {
 		let data = self
@@ -323,7 +330,7 @@ impl fuser::Filesystem for FuseFileSystem {
 		};
 
 		for (i, (name, inode)) in dir_children.iter().enumerate().skip(offset as usize) {
-			let attr = self.attr_map.get(&inode).unwrap();
+			let attr = self.attr_map.get(inode).unwrap();
 			let reply_buffer_full = reply.add(*inode, (i + 1) as i64, attr.kind, name);
 
 			if reply_buffer_full {

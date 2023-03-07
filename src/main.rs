@@ -279,6 +279,32 @@ impl fuser::Filesystem for FuseFileSystem {
 		};
 	}
 
+	fn read(
+		&mut self,
+		_req: &fuser::Request<'_>,
+		inode: u64,
+		_fh: u64,
+		offset: i64,
+		size: u32,
+		flags: i32,
+		lock_owner: Option<u64>,
+		reply: fuser::ReplyData,
+	) {
+		let data = self
+			.full_file_paths
+			.get(&inode)
+			.and_then(|path| self.archive.as_mut().unwrap().get_file(path));
+
+		match data {
+			None => reply.error(libc::ENOENT),
+			Some(data) => {
+				let start = offset as usize;
+				let end = offset as usize + size as usize;
+				reply.data(&data[start..end.min(data.len())])
+			},
+		};
+	}
+
 	fn readdir(
 		&mut self,
 		_req: &fuser::Request<'_>,

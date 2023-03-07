@@ -66,6 +66,9 @@ struct FuseFileSystem {
 	next_inode: u64,
 	attr_map: HashMap<INode, FileAttr>,
 	dir_children: HashMap<INode, HashMap<String, INode>>,
+
+	archive: Option<sarc::SarcWriter>,
+	full_file_paths: HashMap<INode, String>,
 }
 
 impl FuseFileSystem {
@@ -179,32 +182,37 @@ impl fuser::Filesystem for FuseFileSystem {
 		self.add_new_dir_attr(FUSE_ROOT_ID, SystemTime::now(), uid, gid);
 		self.next_inode = FUSE_ROOT_ID + 1;
 
-		let mut unresolved_paths: Vec<(INode, Vec<(&str, usize)>)> = vec![(
+		let mut unresolved_paths: Vec<(INode, Vec<(&str, &str, usize)>)> = vec![(
 			FUSE_ROOT_ID,
 			archive_files
 				.iter()
-				.flat_map(|f| f.name.map(|n| (n, f.data.len())))
+				.filter_map(|f| f.name.map(|n| (n, n, f.data.len())))
 				.collect(),
 		)];
 
 		while let Some((dir_inode, data)) = unresolved_paths.pop() {
-			let mut new_dirs = HashMap::<&str, Vec<(&str, usize)>>::new();
+			let mut new_dirs = HashMap::<&str, Vec<(&str, &str, usize)>>::new();
 
-			for (path, size) in data {
+			for (path, full_path, size) in data {
 				match path.split_once('/') {
 					Some((dir_name, unresolved_path)) => {
 						if !new_dirs.contains_key(dir_name) {
 							new_dirs.insert(dir_name.into(), Vec::new());
 						}
 
-						new_dirs
-							.get_mut(dir_name)
-							.unwrap()
-							.push((unresolved_path.into(), size));
+						new_dirs.get_mut(dir_name).unwrap().push((
+							unresolved_path.into(),
+							full_path,
+							size,
+						));
 					},
 
 					None => {
 						let file_inode = self.get_new_inode();
+
+						self.full_file_paths
+							.insert(file_inode, full_path.to_string());
+
 						self.add_new_file_attr(file_inode, size as u64, UNIX_EPOCH, uid, gid);
 
 						self.dir_children
@@ -226,6 +234,9 @@ impl fuser::Filesystem for FuseFileSystem {
 				unresolved_paths.push((new_dir_inode, paths));
 			}
 		}
+
+		// I doubt this is efficient
+		self.archive = Some(sarc::SarcWriter::from_sarc(&sarc_archive));
 
 		Ok(())
 	}
@@ -284,8 +295,6 @@ impl fuser::Filesystem for FuseFileSystem {
 
 			Some(children) => children,
 		};
-
-		info!("{}", dir_children.len());
 
 		for (i, (name, inode)) in dir_children.iter().enumerate().skip(offset as usize) {
 			let attr = self.attr_map.get(&inode).unwrap();

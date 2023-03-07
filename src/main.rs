@@ -20,13 +20,23 @@ const BLOCK_SIZE: u32 = 4096;
 fn main() {
 	env_logger::init();
 
-	let path = "/home/adk9p/projects/rhmm/cia_file/cia_extracted/romfs/USlayout/common.zlib".into();
+	let args = clap::Command::new("test prog")
+		.author("0xadk")
+		.version("0.0.1")
+		.about("A fuse filesystem for zlib compressed SARC archives")
+		.arg(clap::Arg::new("archive").required(true).index(1))
+		.arg(clap::Arg::new("mount_point").required(true).index(2))
+		.get_matches();
+
+	let archive_path = args.get_one::<String>("archive").unwrap().to_string();
+	let mount_point = args.get_one::<String>("mount_point").unwrap();
+
 	let fs = FuseFileSystem {
-		mounted_archive_path: path,
+		archive_path,
 		..FuseFileSystem::default()
 	};
 
-	let mount_session = fuser::spawn_mount2(fs, "./mnt", &vec![
+	let mount_session = fuser::spawn_mount2(fs, mount_point, &vec![
 		MountOption::RO,
 		MountOption::FSName("rhmmfs".to_string()),
 	])
@@ -51,7 +61,7 @@ type INode = u64;
 
 #[derive(Default)]
 struct FuseFileSystem {
-	mounted_archive_path: String,
+	archive_path: String,
 
 	next_inode: u64,
 	attr_map: HashMap<INode, FileAttr>,
@@ -115,7 +125,7 @@ impl fuser::Filesystem for FuseFileSystem {
 		_req: &fuser::Request<'_>,
 		_config: &mut fuser::KernelConfig,
 	) -> Result<(), libc::c_int> {
-		let mut zlib_archive = File::open(&self.mounted_archive_path).unwrap();
+		let mut zlib_archive = File::open(&self.archive_path).unwrap();
 
 		let uncompressed_archive_size = {
 			// the first 4 bytes should be the size of the uncompressed SARC archive
